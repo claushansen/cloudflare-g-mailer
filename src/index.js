@@ -2,8 +2,9 @@ export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
     
+    // Generel CORS
     const corsHeaders = {
-      "Access-Control-Allow-Origin": "*",
+      "Access-Control-Allow-Origin": "*", 
       "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
       "Access-Control-Allow-Headers": "Content-Type, Session-Id",
     };
@@ -12,16 +13,13 @@ export default {
       return new Response(null, { headers: corsHeaders });
     }
 
-    // --- 1. START LOGIN ---
+    // --- 1. LOGIN FLOW ---
     if (url.pathname === "/auth") {
       const sessionId = url.searchParams.get("session_id");
       if (!sessionId) return new Response("Mangler session_id", { status: 400 });
 
-      // RETTELSE HER: Tilføjet 'userinfo.email' så vi kan se din adresse
       const scope = "https://www.googleapis.com/auth/gmail.send https://www.googleapis.com/auth/userinfo.email";
-      
       const authUrl = `https://accounts.google.com/o/oauth2/v2/auth?client_id=${env.CLIENT_ID}&redirect_uri=${env.REDIRECT_URI}&response_type=code&scope=${scope}&access_type=offline&prompt=consent&state=${sessionId}`;
-      
       return Response.redirect(authUrl, 302);
     }
 
@@ -83,25 +81,37 @@ export default {
         const userRes = await fetch("https://www.googleapis.com/oauth2/v2/userinfo", {
           headers: { Authorization: `Bearer ${accessToken}` }
         });
-        
-        if (!userRes.ok) throw new Error("Kunne ikke hente brugerinfo fra Google");
-        
         const userData = await userRes.json();
-        const userEmail = userData.email; // Denne var 'undefined' før!
+        const userEmail = userData.email;
 
-        if (!userEmail) throw new Error("Kunne ikke finde din email-adresse i Google profilen");
+        // Hjælpefunktion til at kode tekst til UTF-8 Base64
+        const utf8_to_b64 = (str) => {
+            return btoa(unescape(encodeURIComponent(str)));
+        };
 
-        // Send mail
+        // Koder emnefeltet specifikt til mail-standard (RFC 2047) for at fikse æøå
+        const encodeSubject = (str) => {
+            return `=?utf-8?B?${utf8_to_b64(str)}?=`;
+        };
+
         const sourceApp = body.source || "DBA Monitor";
+        const rawSubject = `[${sourceApp}] ${body.subject}`;
+        
+        // Her bruger vi den nye kodning på emnefeltet
+        const encodedSubject = encodeSubject(rawSubject);
+
         const emailContent = [
           `From: "${sourceApp}" <${userEmail}>`,
           `To: <${userEmail}>`,
-          `Subject: [${sourceApp}] ${body.subject}`,
+          `Subject: ${encodedSubject}`,
+          `MIME-Version: 1.0`,
           `Content-Type: text/html; charset=utf-8`,
+          `Content-Transfer-Encoding: base64`,
           ``,
-          body.html
+          utf8_to_b64(body.html) // Koder også selve kroppen korrekt
         ].join("\n");
 
+        // Google API kræver URL-safe base64 af hele beskeden
         const raw = btoa(unescape(encodeURIComponent(emailContent)))
           .replace(/\+/g, '-')
           .replace(/\//g, '_')
